@@ -1,4 +1,4 @@
-/* global HTMLAudioElement */
+/* global AudioBuffer, AudioContext, File, HTMLAudioElement, Image, URL */
 import { ChangeEvent, DragEvent, KeyboardEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -67,9 +67,11 @@ export function MediaPanel() {
   const trimVideoRef = useRef<HTMLVideoElement | null>(null);
   const trimAudioRef = useRef<HTMLAudioElement | null>(null);
   const trimStripRef = useRef<HTMLDivElement | null>(null);
+  const webFileInputRef = useRef<HTMLInputElement | null>(null);
   const assets = useMemo(() => Object.values(assetMap).filter(isImportedMediaAsset), [assetMap]);
   const contextAsset = contextMenu ? assetMap[contextMenu.assetId] : undefined;
   const trimAsset = trimAssetId ? assetMap[trimAssetId] : undefined;
+  const isTauri = "__TAURI_INTERNALS__" in window;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -86,6 +88,10 @@ export function MediaPanel() {
 
   const importPaths = async (paths: string[]) => {
     if (paths.length === 0) return;
+    if (!isTauri) {
+      addToast("error", "Use local file upload in the web editor.");
+      return;
+    }
     setImporting(true);
     setFailed([]);
     const failures: string[] = [];
@@ -111,11 +117,43 @@ export function MediaPanel() {
   };
 
   const importMedia = async () => {
+    if (!isTauri) {
+      webFileInputRef.current?.click();
+      return;
+    }
     const selected = await open({
       multiple: true,
       filters: [{ name: "Media", extensions }]
     });
     await importPaths(Array.isArray(selected) ? selected : selected ? [selected] : []);
+  };
+
+  const importWebFiles = async (files: File[]) => {
+    const supported = files.filter(isSupportedBrowserFile);
+    if (!supported.length) {
+      addToast("error", "Choose a supported video, audio, or image file.");
+      return;
+    }
+    setImporting(true);
+    setFailed([]);
+    const failures: string[] = [];
+    try {
+      for (const file of supported) {
+        try {
+          addAsset(await browserFileToAsset(file));
+        } catch (error) {
+          failures.push(`${file.name}: ${String(error)}`);
+        }
+      }
+      if (failures.length) {
+        setFailed(failures);
+        addToast("error", `${failures.length} file${failures.length === 1 ? "" : "s"} failed to import.`);
+      }
+      const imported = supported.length - failures.length;
+      if (imported > 0) addToast("success", `Imported ${imported} local file${imported === 1 ? "" : "s"}.`);
+    } finally {
+      setImporting(false);
+    }
   };
 
   const addLibraryAssetToTimeline = (asset: MediaAsset) => {
@@ -286,6 +324,10 @@ export function MediaPanel() {
 
   const onDropImport = async (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
+    if (!isTauri) {
+      await importWebFiles(Array.from(event.dataTransfer.files));
+      return;
+    }
     const paths = Array.from(event.dataTransfer.files)
       .map((file) => "path" in file ? String((file as { path?: string }).path ?? "") : "")
       .filter(Boolean);
@@ -301,6 +343,18 @@ export function MediaPanel() {
 
   return (
     <aside className="media-panel" onDrop={onDropImport} onDragOver={(event) => event.preventDefault()} onClick={() => setContextMenu(null)}>
+      <input
+        ref={webFileInputRef}
+        className="web-file-input"
+        type="file"
+        accept={extensions.map((extension) => `.${extension}`).join(",")}
+        multiple
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          void importWebFiles(files);
+        }}
+      />
       <div className="panel-tabs">
         {(["Project Media", "Stock", "Brand Kit"] as const).map((name) => (
           <button className={tab === name ? "active" : ""} key={name} onClick={() => setTab(name)}>
@@ -601,6 +655,142 @@ function toAsset(result: ProbeResult): MediaAsset {
     waveformPeaks: result.waveform,
     importedAt: new Date().toISOString()
   };
+}
+
+function isSupportedBrowserFile(file: File): boolean {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return extensions.includes(extension);
+}
+
+function browserMediaType(file: File): Exclude<MediaType, "unknown"> {
+  if (file.type.startsWith("audio/")) return "audio";
+  if (file.type.startsWith("image/")) return "image";
+  if (file.type.startsWith("video/")) return "video";
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (["mp3", "m4a", "wav", "aac", "flac", "ogg", "opus", "wma", "aiff", "aif"].includes(extension)) return "audio";
+  if (["png", "jpg", "jpeg", "webp", "bmp", "gif"].includes(extension)) return "image";
+  return "video";
+}
+
+async function browserFileToAsset(file: File): Promise<MediaAsset> {
+  const type = browserMediaType(file);
+  const url = URL.createObjectURL(file);
+  const metadata = type === "image"
+    ? await readImageMetadata(url)
+    : type === "audio"
+      ? await readAudioMetadata(file, url)
+      : await readVideoMetadata(url);
+  return {
+    id: `web-${crypto.randomUUID()}`,
+    path: url,
+    name: file.name,
+    type,
+    duration: type === "image" ? undefined : metadata.duration,
+    width: metadata.width,
+    height: metadata.height,
+    fps: type === "video" ? 30 : undefined,
+    sampleRate: metadata.sampleRate,
+    channels: metadata.channels,
+    thumbnailPath: metadata.thumbnailPath,
+    waveformPeaks: metadata.waveformPeaks,
+    importedAt: new Date().toISOString()
+  };
+}
+
+function readImageMetadata(url: string): Promise<Partial<MediaAsset>> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight, thumbnailPath: url });
+    image.onerror = () => reject(new Error("Could not read image metadata."));
+    image.src = url;
+  });
+}
+
+function readVideoMetadata(url: string): Promise<Partial<MediaAsset>> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    let settled = false;
+    const finish = (thumbnailPath?: string) => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        duration: Number.isFinite(video.duration) ? video.duration : 5,
+        width: video.videoWidth || undefined,
+        height: video.videoHeight || undefined,
+        thumbnailPath
+      });
+    };
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadedmetadata = () => {
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = Math.min(0.25, Math.max(0, video.duration / 8));
+      } else {
+        finish();
+      }
+    };
+    video.onseeked = () => finish(captureVideoFrame(video));
+    video.onerror = () => reject(new Error("Could not read video metadata."));
+    window.setTimeout(() => finish(), 1800);
+    video.src = url;
+  });
+}
+
+async function readAudioMetadata(file: File, url: string): Promise<Partial<MediaAsset>> {
+  const elementMetadata = await new Promise<Partial<MediaAsset>>((resolve) => {
+    const audio = document.createElement("audio");
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => resolve({ duration: Number.isFinite(audio.duration) ? audio.duration : 5 });
+    audio.onerror = () => resolve({ duration: 5 });
+    window.setTimeout(() => resolve({ duration: Number.isFinite(audio.duration) ? audio.duration : 5 }), 1600);
+    audio.src = url;
+  });
+  try {
+    const AudioContextCtor = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return { ...elementMetadata, waveformPeaks: [] };
+    const context = new AudioContextCtor();
+    const buffer = await context.decodeAudioData(await file.arrayBuffer());
+    const peaks = waveformFromAudioBuffer(buffer);
+    await context.close();
+    return {
+      ...elementMetadata,
+      duration: buffer.duration || elementMetadata.duration,
+      sampleRate: buffer.sampleRate,
+      channels: buffer.numberOfChannels,
+      waveformPeaks: peaks
+    };
+  } catch {
+    return { ...elementMetadata, waveformPeaks: [] };
+  }
+}
+
+function captureVideoFrame(video: HTMLVideoElement): string | undefined {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) return undefined;
+  const canvas = document.createElement("canvas");
+  const scale = Math.min(1, 360 / Math.max(width, height));
+  canvas.width = Math.max(2, Math.round(width * scale));
+  canvas.height = Math.max(2, Math.round(height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) return undefined;
+  context.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.78);
+}
+
+function waveformFromAudioBuffer(buffer: AudioBuffer): number[] {
+  const data = buffer.getChannelData(0);
+  const bars = 64;
+  const block = Math.max(1, Math.floor(data.length / bars));
+  return Array.from({ length: bars }, (_, index) => {
+    let sum = 0;
+    const start = index * block;
+    for (let cursor = 0; cursor < block && start + cursor < data.length; cursor += 1) {
+      sum += Math.abs(data[start + cursor]);
+    }
+    return Math.min(1, Math.max(0.08, (sum / block) * 2.6));
+  });
 }
 
 function MediaThumb({ asset, selected }: { asset: MediaAsset; selected: boolean }) {
