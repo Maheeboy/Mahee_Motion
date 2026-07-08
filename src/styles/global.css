@@ -293,6 +293,10 @@ select option:hover {
   gap: 0;
   padding: 0 8px 0 8px;
 }
+.workspace > * {
+  min-width: 0;
+  min-height: 0;
+}
 body.workspace-hide-media .workspace { grid-template-columns: 98px 0 0 minmax(360px, 1fr) 6px var(--inspector-width); }
 body.workspace-hide-media .media-panel,
 body.workspace-hide-media .workspace > .panel-resizer-x:first-of-type { display: none; }
@@ -358,8 +362,8 @@ body.hide-sidebar-labels .side-nav-item { height: 44px; }
 .media-panel, .preview-panel, .inspector-panel {
   min-width: 0;
   min-height: 0;
-  align-self: stretch;
-  height: auto;
+  align-self: start;
+  height: calc(100% - 4px);
   margin-top: 4px;
   background: linear-gradient(180deg, rgba(22,30,37,0.98), rgba(14,20,25,0.98));
   border: 1px solid var(--line);
@@ -1816,8 +1820,10 @@ body.hide-sidebar-labels .side-nav-item { height: 44px; }
 .center-column {
   min-width: 0;
   min-height: 0;
+  align-self: stretch;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
+  height: 100%;
   overflow: hidden;
 }
 .preview-panel {
