@@ -2022,12 +2022,12 @@ body.hide-sidebar-labels .side-nav-item { height: 44px; }
   overflow: hidden;
   min-height: 0;
   margin: 0 8px;
-  background: #292b2e;
+  background: #000;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 3px;
 }
 .viewer-empty {
-  background: #292b2e;
+  background: #000;
 }
 .viewer > video, .viewer > img {
   position: absolute;
@@ -2373,14 +2373,15 @@ body.hide-sidebar-labels .side-nav-item { height: 44px; }
 }
 .preview-screen-graphic {
   position: relative;
-  width: min(72%, 720px);
-  max-height: calc(100% - 72px);
+  width: 100%;
+  height: 100%;
+  max-height: none;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-radius: 7px;
+  border-radius: 0;
   background: #132d39;
-  border: 1px solid rgba(255,255,255,0.13);
-  box-shadow: 0 24px 70px rgba(0,0,0,0.42), inset 0 0 0 1px rgba(255,255,255,0.04);
+  border: 0;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
 }
 .screen-sky, .screen-ridge, .screen-lake, .screen-shine { position: absolute; inset: 0; }
 .screen-sky {

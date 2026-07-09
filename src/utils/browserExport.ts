@@ -44,7 +44,7 @@ export async function exportVideoInBrowser(options: BrowserExportOptions): Promi
     recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType || "video/webm" }));
   });
 
-  recorder.start(500);
+  recorder.start();
   const start = performance.now();
   await new Promise<void>((resolve) => {
     const draw = () => {
