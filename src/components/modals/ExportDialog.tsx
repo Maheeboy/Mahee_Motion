@@ -47,14 +47,14 @@ export function ExportDialog() {
   const choosePath = async () => {
     const fileName = (project.name.trim() || "Unknown").replace(/\s+/g, "-").toLowerCase();
     if (!isTauri) {
-      const suggestedName = `${fileName}.${mode === "audio" ? "wav" : "webm"}`;
+      const suggestedName = `${fileName}.${mode === "audio" ? "wav" : "mp4"}`;
       if (window.showSaveFilePicker) {
         try {
           const handle = await window.showSaveFilePicker({
             suggestedName,
             types: mode === "audio"
               ? [{ description: "WAV Audio", accept: { "audio/wav": [".wav"] } }]
-              : [{ description: "WebM Video", accept: { "video/webm": [".webm"] } }]
+              : [{ description: "MP4 Video", accept: { "video/mp4": [".mp4"] } }]
           });
           setBrowserFileHandle(handle);
           updateExportSettings({ outputPath: `Browser save target: ${handle.name}` });
@@ -95,7 +95,7 @@ export function ExportDialog() {
       }
       setExportProgress({ progress: 0, message: mode === "audio" ? "Preparing browser audio export" : "Preparing browser video export" });
       try {
-        const baseName = `${(project.name.trim() || "Unknown").replace(/[\\/:*?"<>|]+/g, "-")}.${mode === "audio" ? "wav" : "webm"}`;
+        const baseName = `${(project.name.trim() || "Unknown").replace(/[\\/:*?"<>|]+/g, "-")}.${mode === "audio" ? "wav" : "mp4"}`;
         const output = mode === "audio"
           ? await exportAudioInBrowser({
               project,
@@ -235,7 +235,7 @@ export function ExportDialog() {
           {!isTauri
             ? mode === "audio"
               ? "Online audio export mixes audible timeline sources in the browser and saves a WAV file."
-              : "Online video export renders visible timeline media in the browser and saves a WebM file. Use the Windows app when you need FFmpeg MP4 output."
+              : "Online video export renders visible timeline media in the browser and saves standard MP4 when your browser supports it."
             : mode === "audio"
             ? "Audio-only export mixes all audible timeline audio and unmuted video audio into an AAC .m4a file."
             : "Sequential visible video clips export to H.264 MP4. Unsupported timeline items are listed below before export."}

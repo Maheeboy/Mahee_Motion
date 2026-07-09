@@ -24,9 +24,17 @@ export async function exportVideoInBrowser(options: BrowserExportOptions): Promi
 
   const media = await loadVisualMedia(options.visualClips);
   const stream = canvas.captureStream(frameRate);
-  const mimeType = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]
+  const mimeType = [
+    "video/mp4;codecs=avc1.42E01E",
+    "video/mp4;codecs=h264",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm"
+  ]
     .find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
-  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const outputExtension = mimeType.includes("mp4") ? ".mp4" : ".webm";
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : { videoBitsPerSecond: 8_000_000 });
   const chunks: Blob[] = [];
   recorder.ondataavailable = (event) => {
     if (event.data.size > 0) chunks.push(event.data);
@@ -54,10 +62,11 @@ export async function exportVideoInBrowser(options: BrowserExportOptions): Promi
   });
   recorder.stop();
   stream.getTracks().forEach((track) => track.stop());
+  pauseAllVideos(media);
   const blob = await done;
-  await saveBlob(blob, options.fileHandle, ensureExtension(options.filename, ".webm"));
+  await saveBlob(blob, options.fileHandle, ensureExtension(options.filename, outputExtension));
   options.onProgress?.(1, "Browser export complete");
-  return options.fileHandle?.name ?? ensureExtension(options.filename, ".webm");
+  return options.fileHandle?.name ?? ensureExtension(options.filename, outputExtension);
 }
 
 export async function exportAudioInBrowser(options: BrowserExportOptions): Promise<string> {
@@ -129,8 +138,9 @@ async function loadVisualMedia(clips: ExportRenderClip[]) {
       video.onloadedmetadata = () => resolve();
       video.onerror = () => reject(new Error(`Could not load ${clip.sourcePath}`));
     });
-    void video.play().catch(() => undefined);
-    video.pause();
+    if (Number.isFinite(clip.sourceIn) && clip.sourceIn > 0) {
+      await seekVideo(video, clip.sourceIn).catch(() => undefined);
+    }
     return [clip.id, video] as const;
   }));
   return new Map<string, HTMLImageElement | HTMLVideoElement>(entries);
@@ -155,12 +165,14 @@ function drawFrame(
     const item = media.get(clip.id);
     if (!item) continue;
     if (item instanceof HTMLVideoElement) {
-      const desired = clip.sourceIn + Math.max(0, time - clip.timelineStart) * Math.max(0.25, clip.speed || 1);
-      if (Number.isFinite(desired) && Math.abs(item.currentTime - desired) > 0.12) {
-        try { item.currentTime = desired; } catch { /* ignored */ }
-      }
+      syncVideoPlayback(item, clip, time);
     }
     drawContain(context, item, width, height);
+  }
+  for (const clip of clips) {
+    if (active.includes(clip)) continue;
+    const item = media.get(clip.id);
+    if (item instanceof HTMLVideoElement && !item.paused) item.pause();
   }
 }
 
@@ -182,7 +194,35 @@ function timelineDuration(visualClips: ExportRenderClip[], audioClips: ExportAud
   );
 }
 
-function ensureExtension(filename: string, extension: ".webm" | ".wav") {
+function syncVideoPlayback(video: HTMLVideoElement, clip: ExportRenderClip, absoluteTime: number) {
+  const speed = Math.max(0.25, Math.min(4, clip.speed || 1));
+  const desired = clip.sourceIn + Math.max(0, absoluteTime - clip.timelineStart) * speed;
+  video.playbackRate = speed;
+  if (Number.isFinite(desired) && Math.abs(video.currentTime - desired) > 0.75) {
+    try { video.currentTime = desired; } catch { /* ignored */ }
+  }
+  if (video.paused) void video.play().catch(() => undefined);
+}
+
+function pauseAllVideos(media: Map<string, HTMLImageElement | HTMLVideoElement>) {
+  for (const item of media.values()) {
+    if (item instanceof HTMLVideoElement) item.pause();
+  }
+}
+
+function seekVideo(video: HTMLVideoElement, time: number) {
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      video.removeEventListener("seeked", done);
+      resolve();
+    };
+    video.addEventListener("seeked", done, { once: true });
+    video.currentTime = time;
+    window.setTimeout(done, 900);
+  });
+}
+
+function ensureExtension(filename: string, extension: ".mp4" | ".webm" | ".wav") {
   return filename.replace(/\.(mp4|m4a|webm|wav)$/i, "") + extension;
 }
 

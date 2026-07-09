@@ -24,7 +24,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 const TIMELINE_RESIZER_HEIGHT = 6;
 const MIN_TIMELINE_HEIGHT = 190;
 const MAX_TIMELINE_HEIGHT = 520;
-const DEFAULT_PANEL_SIZES = { media: 522, inspector: 410, timeline: 326 };
+const DEFAULT_PANEL_SIZES = { media: 572, inspector: 458, timeline: 254 };
 
 interface AutosaveInfo {
   id: string;
