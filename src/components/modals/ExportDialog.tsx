@@ -1,3 +1,4 @@
+/* global FileSystemFileHandle */
 import { useEffect, useMemo, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,6 +8,7 @@ import { buildAudioExportPlan, buildExportPlan } from "../../utils/timeline";
 import { formatTimecode } from "../../utils/time";
 import type { AspectRatioPreset, ExportSettings } from "../../types/editor";
 import { isTauriRuntime } from "../../utils/runtime";
+import { exportAudioInBrowser, exportVideoInBrowser } from "../../utils/browserExport";
 
 const aspectPresets: Array<{ value: AspectRatioPreset; label: string; shape: "wide" | "classic" | "cinema" | "portrait" | "square" }> = [
   { value: "16:9", label: "16:9", shape: "wide" },
@@ -23,6 +25,7 @@ const aspectPresets: Array<{ value: AspectRatioPreset; label: string; shape: "wi
 export function ExportDialog() {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"video" | "audio">("video");
+  const [browserFileHandle, setBrowserFileHandle] = useState<FileSystemFileHandle>();
   const isTauri = isTauriRuntime();
   const project = useEditorStore((state) => state.project);
   const updateExportSettings = useEditorStore((state) => state.updateExportSettings);
@@ -44,15 +47,16 @@ export function ExportDialog() {
   const choosePath = async () => {
     const fileName = (project.name.trim() || "Unknown").replace(/\s+/g, "-").toLowerCase();
     if (!isTauri) {
-      const suggestedName = `${fileName}.${mode === "audio" ? "m4a" : "mp4"}`;
+      const suggestedName = `${fileName}.${mode === "audio" ? "wav" : "webm"}`;
       if (window.showSaveFilePicker) {
         try {
           const handle = await window.showSaveFilePicker({
             suggestedName,
             types: mode === "audio"
-              ? [{ description: "AAC Audio", accept: { "audio/mp4": [".m4a"] } }]
-              : [{ description: "MP4 Video", accept: { "video/mp4": [".mp4"] } }]
+              ? [{ description: "WAV Audio", accept: { "audio/wav": [".wav"] } }]
+              : [{ description: "WebM Video", accept: { "video/webm": [".webm"] } }]
           });
+          setBrowserFileHandle(handle);
           updateExportSettings({ outputPath: `Browser save target: ${handle.name}` });
           addToast("success", "Browser save target selected.");
         } catch (error) {
@@ -60,6 +64,7 @@ export function ExportDialog() {
           addToast("error", String(error));
         }
       } else {
+        setBrowserFileHandle(undefined);
         updateExportSettings({ outputPath: `Browser Downloads/${suggestedName}` });
         addToast("info", "Your browser will download exports to its Downloads folder.");
       }
@@ -80,7 +85,38 @@ export function ExportDialog() {
       return;
     }
     if (!isTauri) {
-      addToast("error", "Online export cannot write PC paths or run the desktop FFmpeg renderer. Save the project as .mmotion, or export MP4/audio from the Windows app.");
+      if (mode === "audio" && audioExportPlan.clips.length === 0) {
+        addToast("error", "Add at least one audible audio or video clip to the timeline before exporting audio.");
+        return;
+      }
+      if (mode === "video" && exportPlan.clips.length === 0) {
+        addToast("error", "Add at least one video or image clip to the timeline before exporting.");
+        return;
+      }
+      setExportProgress({ progress: 0, message: mode === "audio" ? "Preparing browser audio export" : "Preparing browser video export" });
+      try {
+        const baseName = `${(project.name.trim() || "Unknown").replace(/[\\/:*?"<>|]+/g, "-")}.${mode === "audio" ? "wav" : "webm"}`;
+        const output = mode === "audio"
+          ? await exportAudioInBrowser({
+              project,
+              visualClips: exportPlan.clips,
+              audioClips: audioExportPlan.clips,
+              fileHandle: browserFileHandle,
+              filename: baseName,
+              onProgress: (progress, message) => setExportProgress({ progress, message })
+            })
+          : await exportVideoInBrowser({
+              project,
+              visualClips: exportPlan.clips,
+              audioClips: audioExportPlan.clips,
+              fileHandle: browserFileHandle,
+              filename: baseName,
+              onProgress: (progress, message) => setExportProgress({ progress, message })
+            });
+        addToast("success", `Exported ${output}`);
+      } catch (error) {
+        addToast("error", String(error));
+      }
       return;
     }
     if (mode === "audio" && audioExportPlan.clips.length === 0) {
@@ -197,7 +233,9 @@ export function ExportDialog() {
         </div>
         <div className="export-note">
           {!isTauri
-            ? "Browsers cannot write directly to Windows paths or run the desktop FFmpeg renderer from this static web app. Use Browse to choose a browser save target, and use the Windows app for final MP4/audio rendering."
+            ? mode === "audio"
+              ? "Online audio export mixes audible timeline sources in the browser and saves a WAV file."
+              : "Online video export renders visible timeline media in the browser and saves a WebM file. Use the Windows app when you need FFmpeg MP4 output."
             : mode === "audio"
             ? "Audio-only export mixes all audible timeline audio and unmuted video audio into an AAC .m4a file."
             : "Sequential visible video clips export to H.264 MP4. Unsupported timeline items are listed below before export."}
