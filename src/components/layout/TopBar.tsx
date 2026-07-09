@@ -1,3 +1,4 @@
+/* global Blob, File, URL */
 import { Bell, ChevronDown, Cloud, Download, HelpCircle, Redo2, Settings, Share2, Undo2, Zap } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -5,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useEditorStore } from "../../store/editorStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { createProject } from "../../utils/timeline";
+import { isTauriRuntime } from "../../utils/runtime";
 
 interface RecentProject {
   path: string;
@@ -37,36 +39,56 @@ export function TopBar({ recoveryCount = 0, onOpenRecoveries }: TopBarProps) {
   const [recentOpen, setRecentOpen] = useState(false);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [draftProjectName, setDraftProjectName] = useState(projectName);
+  const [webProjectInput, setWebProjectInput] = useState<HTMLInputElement | null>(null);
+  const isTauri = isTauriRuntime();
 
   useEffect(() => {
     setDraftProjectName(projectName);
   }, [projectName]);
 
   const refreshRecentProjects = useCallback(async () => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (!isTauri) return;
     const recent = await invoke<RecentProject[]>("list_recent_projects");
     setRecentProjects(recent);
-  }, []);
+  }, [isTauri]);
 
   const recordRecentProject = useCallback(async (path: string) => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (!isTauri) return;
     await invoke<RecentProject[]>("record_recent_project", {
       path,
       projectId: useEditorStore.getState().project.id,
       projectName: useEditorStore.getState().project.name
     });
-  }, []);
+  }, [isTauri]);
 
   const saveProject = useCallback(async () => {
+    if (!isTauri) {
+      const blob = new Blob([projectJson()], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${(project.name.trim() || "Unknown").replace(/[\\/:*?"<>|]+/g, "-")}.mmotion`;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      markManualSave(anchor.download);
+      addToast("success", "Project downloaded as a .mmotion file.");
+      return;
+    }
     const path = currentProjectPath ?? await save({ filters: [{ name: "Mahee Motion Project", extensions: ["mmotion", "json"] }] });
     if (!path) return;
     await invoke("save_project_file", { path, json: projectJson() });
     markManualSave(path);
     await recordRecentProject(path);
     addToast("success", "Project saved.");
-  }, [addToast, currentProjectPath, markManualSave, projectJson, recordRecentProject]);
+  }, [addToast, currentProjectPath, isTauri, markManualSave, project.name, projectJson, recordRecentProject]);
 
   const openProject = useCallback(async () => {
+    if (!isTauri) {
+      webProjectInput?.click();
+      return;
+    }
     const path = await open({ multiple: false, filters: [{ name: "Mahee Motion Project", extensions: ["mmotion", "json"] }] });
     if (typeof path !== "string") return;
     const json = await invoke<string>("load_project_file", { path });
@@ -75,7 +97,20 @@ export function TopBar({ recoveryCount = 0, onOpenRecoveries }: TopBarProps) {
     setSaveStatus("Saved just now");
     await recordRecentProject(path);
     addToast("success", "Project loaded.");
-  }, [addToast, loadProjectJson, recordRecentProject, setCurrentProjectPath, setSaveStatus]);
+  }, [addToast, isTauri, loadProjectJson, recordRecentProject, setCurrentProjectPath, setSaveStatus, webProjectInput]);
+
+  const openWebProjectFile = useCallback(async (file: File) => {
+    try {
+      const json = await file.text();
+      loadProjectJson(json);
+      setCurrentProjectPath(file.name);
+      setSaveStatus("Saved just now");
+      setRecentOpen(false);
+      addToast("success", "Project loaded from your computer.");
+    } catch (error) {
+      addToast("error", `Could not open project: ${String(error)}`);
+    }
+  }, [addToast, loadProjectJson, setCurrentProjectPath, setSaveStatus]);
 
   const openRecentProject = useCallback(async (path: string) => {
     const json = await invoke<string>("load_project_file", { path });
@@ -117,6 +152,17 @@ export function TopBar({ recoveryCount = 0, onOpenRecoveries }: TopBarProps) {
 
   return (
     <header className="top-bar">
+      <input
+        ref={setWebProjectInput}
+        className="project-file-input"
+        type="file"
+        accept=".mmotion,.json,application/json"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (file) void openWebProjectFile(file);
+        }}
+      />
       <div className="brand">
         <Zap size={27} fill="#0ea5ff" strokeWidth={2.4} />
         <span>Mahee Motion</span>

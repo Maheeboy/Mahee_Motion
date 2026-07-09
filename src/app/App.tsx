@@ -1,5 +1,6 @@
+/* global Blob, File, FileSystemDirectoryHandle, MediaRecorder, URL, navigator */
 import type { CSSProperties, PointerEvent } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -17,6 +18,7 @@ import { SettingsDialog } from "../components/settings/SettingsDialog";
 import { useEditorStore } from "../store/editorStore";
 import type { MediaAsset, MediaType } from "../types/editor";
 import { sortRecoveryCandidates } from "../utils/persistence";
+import { isLikelyMobileDevice, isTauriRuntime } from "../utils/runtime";
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const TIMELINE_RESIZER_HEIGHT = 6;
@@ -76,16 +78,23 @@ function maxTimelineHeight() {
 }
 
 export function App() {
+  const isTauri = isTauriRuntime();
+  const isMobileDevice = isLikelyMobileDevice();
   const [panelSizes, setPanelSizes] = useState(DEFAULT_PANEL_SIZES);
   const [recoveries, setRecoveries] = useState<AutosaveInfo[]>([]);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [recorderMonitor, setRecorderMonitor] = useState<RecorderMonitor>();
   const [recorderPrompt, setRecorderPrompt] = useState<RecordingCandidate>();
   const [recorderOpening, setRecorderOpening] = useState(false);
+  const [webRecordingActive, setWebRecordingActive] = useState(false);
+  const [webRecorderPrompt, setWebRecorderPrompt] = useState<{ file: File; savedName: string }>();
   const [recorderOutputDir, setRecorderOutputDir] = useState(() => {
     if (typeof window === "undefined") return "";
     return window.localStorage.getItem(RECORDER_OUTPUT_DIR_KEY) ?? "";
   });
+  const browserRecorderRef = useRef<MediaRecorder | null>(null);
+  const browserRecorderChunksRef = useRef<Blob[]>([]);
+  const browserRecorderDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null);
   const project = useEditorStore((state) => state.project);
   const projectJson = useEditorStore((state) => state.projectJson);
   const saveStatus = useEditorStore((state) => state.saveStatus);
@@ -111,14 +120,14 @@ export function App() {
   const addAssetToTimeline = useEditorStore((state) => state.addAssetToTimeline);
 
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (!isTauri) return;
     void invoke<AutosaveInfo[]>("list_project_recoveries")
       .then((items) => setRecoveries(sortRecoveryCandidates(items).slice(0, 1)))
       .catch(() => undefined);
-  }, []);
+  }, [isTauri]);
 
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window) || saveStatus !== "Unsaved changes") return;
+    if (!isTauri || saveStatus !== "Unsaved changes") return;
     const timeout = window.setTimeout(() => {
       void invoke<AutosaveInfo>("write_project_autosave", {
         json: projectJson(),
@@ -130,7 +139,7 @@ export function App() {
         .catch(() => undefined);
     }, 2000);
     return () => window.clearTimeout(timeout);
-  }, [currentProjectPath, markAutosaved, project, projectJson, saveStatus]);
+  }, [currentProjectPath, isTauri, markAutosaved, project, projectJson, saveStatus]);
 
   const recoverProject = async (recovery: AutosaveInfo) => {
     const json = await invoke<string>("load_project_autosave", { autosaveId: recovery.id });
@@ -148,7 +157,28 @@ export function App() {
   };
 
   const configureScreenRecorderPath = useCallback(async () => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (!isTauri) {
+      if (window.showDirectoryPicker) {
+        try {
+          const directory = await window.showDirectoryPicker({ mode: "readwrite" });
+          browserRecorderDirectoryRef.current = directory;
+          const label = `Browser folder: ${directory.name}`;
+          window.localStorage.setItem(RECORDER_OUTPUT_DIR_KEY, label);
+          setRecorderOutputDir(label);
+          window.dispatchEvent(new window.CustomEvent("screen-recorder-path-updated", { detail: label }));
+          addToast("success", "Screen recording folder configured for this browser session.");
+        } catch (error) {
+          if (!String(error).includes("AbortError")) addToast("error", String(error));
+        }
+        return;
+      }
+      const label = "Browser Downloads";
+      window.localStorage.setItem(RECORDER_OUTPUT_DIR_KEY, label);
+      setRecorderOutputDir(label);
+      window.dispatchEvent(new window.CustomEvent("screen-recorder-path-updated", { detail: label }));
+      addToast("info", "This browser will save recordings through Downloads.");
+      return;
+    }
     try {
       const selected = await open({
         directory: true,
@@ -163,10 +193,71 @@ export function App() {
     } catch (error) {
       addToast("error", String(error));
     }
-  }, [addToast]);
+  }, [addToast, isTauri]);
 
   const openScreenRecorder = useCallback(async () => {
-    if (!("__TAURI_INTERNALS__" in window) || recorderOpening) return;
+    if (!isTauri) {
+      if (recorderOpening || webRecordingActive) return;
+      if (!navigator.mediaDevices?.getDisplayMedia || typeof MediaRecorder === "undefined") {
+        addToast("error", "This browser does not support screen recording. Use Chrome, Edge, or the Windows app.");
+        return;
+      }
+      if (!recorderOutputDir) {
+        const label = window.showDirectoryPicker ? "Choose a browser recording folder first." : "Browser Downloads";
+        if (window.showDirectoryPicker) {
+          addToast("error", label);
+          return;
+        }
+        window.localStorage.setItem(RECORDER_OUTPUT_DIR_KEY, label);
+        setRecorderOutputDir(label);
+        window.dispatchEvent(new window.CustomEvent("screen-recorder-path-updated", { detail: label }));
+      }
+      setRecorderOpening(true);
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 30 },
+          audio: true
+        });
+        const mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+          .find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+        const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        browserRecorderChunksRef.current = [];
+        browserRecorderRef.current = recorder;
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) browserRecorderChunksRef.current.push(event.data);
+        };
+        recorder.onstop = () => {
+          const blob = new Blob(browserRecorderChunksRef.current, { type: mimeType || "video/webm" });
+          const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const file = new File([blob], `mahee-recording-${stamp}.webm`, { type: blob.type });
+          void saveBrowserRecording(file, browserRecorderDirectoryRef.current)
+            .then((savedName) => {
+              setWebRecorderPrompt({ file, savedName });
+              addToast("success", "Screen recording saved.");
+            })
+            .catch((error) => addToast("error", `Recording saved in memory, but browser save failed: ${String(error)}`))
+            .finally(() => {
+              setWebRecordingActive(false);
+              browserRecorderRef.current = null;
+              browserRecorderChunksRef.current = [];
+            });
+        };
+        stream.getTracks().forEach((track) => {
+          track.onended = () => {
+            if (recorder.state !== "inactive") recorder.stop();
+          };
+        });
+        recorder.start(250);
+        setWebRecordingActive(true);
+        addToast("success", "Screen recording started. Stop sharing or use the Stop Recording button when finished.");
+      } catch (error) {
+        if (!String(error).includes("AbortError")) addToast("error", String(error));
+      } finally {
+        setRecorderOpening(false);
+      }
+      return;
+    }
+    if (recorderOpening) return;
     const outputDir = recorderOutputDir || window.localStorage.getItem(RECORDER_OUTPUT_DIR_KEY) || "";
     if (!outputDir) {
       addToast("error", "Choose a recording folder before opening the recorder.");
@@ -187,7 +278,26 @@ export function App() {
     } finally {
       setRecorderOpening(false);
     }
-  }, [addToast, recorderOpening, recorderOutputDir]);
+  }, [addToast, isTauri, recorderOpening, recorderOutputDir, webRecordingActive]);
+
+  const stopBrowserRecording = useCallback(() => {
+    const recorder = browserRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    recorder.stream.getTracks().forEach((track) => track.stop());
+    recorder.stop();
+  }, []);
+
+  const importWebRecording = useCallback(async (file: File) => {
+    try {
+      const asset = await browserRecordingFileToAsset(file);
+      addAsset(asset);
+      addAssetToTimeline(asset.id);
+      setWebRecorderPrompt(undefined);
+      addToast("success", "Recording imported into the timeline.");
+    } catch (error) {
+      addToast("error", `Could not import recording: ${String(error)}`);
+    }
+  }, [addAsset, addAssetToTimeline, addToast]);
 
   const importRecording = useCallback(async (recording: RecordingCandidate) => {
     try {
@@ -204,14 +314,14 @@ export function App() {
   }, [addAsset, addAssetToTimeline, addToast]);
 
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (!isTauri) return;
     const unlisten = listen<{ progress: number; message: string }>("export-progress", (event) => {
       setExportProgress(event.payload);
     });
     return () => {
       void unlisten.then((dispose) => dispose());
     };
-  }, [setExportProgress]);
+  }, [isTauri, setExportProgress]);
 
   useEffect(() => {
     const onOpenRecorder = () => {
@@ -229,7 +339,7 @@ export function App() {
   }, [configureScreenRecorderPath, openScreenRecorder]);
 
   useEffect(() => {
-    if (!recorderMonitor || !("__TAURI_INTERNALS__" in window)) return;
+    if (!recorderMonitor || !isTauri) return;
     const interval = window.setInterval(() => {
       void invoke<RecordingCandidate[]>("recent_recordings", {
         outputDir: recorderMonitor.outputDir,
@@ -246,7 +356,7 @@ export function App() {
         .catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(interval);
-  }, [recorderMonitor]);
+  }, [isTauri, recorderMonitor]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -340,6 +450,8 @@ export function App() {
     window.addEventListener("pointerup", onUp);
   };
 
+  if (isMobileDevice) return <MobileUnsupported />;
+
   return (
     <div
       className="app-shell"
@@ -404,7 +516,55 @@ export function App() {
           </section>
         </div>
       )}
+      {webRecordingActive && (
+        <div className="modal-backdrop recorder-active-backdrop">
+          <section className="recovery-dialog recorder-import-dialog">
+            <header>
+              <span>Screen Recording</span>
+              <strong>Recording in progress</strong>
+            </header>
+            <p>Keep this tab open. Stop sharing from the browser, or use the button below to finish and save the recording.</p>
+            <div className="modal-actions">
+              <button className="primary" onClick={stopBrowserRecording}>Stop Recording</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {webRecorderPrompt && (
+        <div className="modal-backdrop">
+          <section className="recovery-dialog recorder-import-dialog">
+            <header>
+              <span>Screen Recording</span>
+              <strong>Import this recording?</strong>
+            </header>
+            <p>{webRecorderPrompt.savedName} was saved by your browser. Add it to Mahee Motion now?</p>
+            <div className="modal-actions">
+              <button className="secondary" onClick={() => setWebRecorderPrompt(undefined)}>Keep Saved Only</button>
+              <button className="primary" onClick={() => void importWebRecording(webRecorderPrompt.file)}>Import to Timeline</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
+  );
+}
+
+function MobileUnsupported() {
+  return (
+    <main className="mobile-blocker">
+      <section>
+        <span>Mahee Motion</span>
+        <h1>PC or laptop required</h1>
+        <p>
+          This editor needs a desktop-size timeline, precise pointer controls, local media access,
+          and browser APIs that are unreliable on phones.
+        </p>
+        <p>
+          Please open this URL on a Windows PC, laptop, Mac, or Chromebook. Your clips, recorder controls,
+          export options, and timeline editing tools will behave properly there.
+        </p>
+      </section>
+    </main>
   );
 }
 
@@ -424,4 +584,73 @@ function probeResultToAsset(result: ProbeResult): MediaAsset {
     waveformPeaks: result.waveform,
     importedAt: new Date().toISOString()
   };
+}
+
+async function saveBrowserRecording(file: File, directory: FileSystemDirectoryHandle | null): Promise<string> {
+  if (directory) {
+    const handle = await directory.getFileHandle(file.name, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(file);
+    await writable.close();
+    return `${directory.name}/${file.name}`;
+  }
+  const url = URL.createObjectURL(file);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = file.name;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  return `Downloads/${file.name}`;
+}
+
+function browserRecordingFileToAsset(file: File): Promise<MediaAsset> {
+  const url = URL.createObjectURL(file);
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        id: `web-recording-${crypto.randomUUID()}`,
+        path: url,
+        name: file.name,
+        type: "video",
+        duration: Number.isFinite(video.duration) ? video.duration : 5,
+        width: video.videoWidth || undefined,
+        height: video.videoHeight || undefined,
+        fps: 30,
+        importedAt: new Date().toISOString(),
+        thumbnailPath: captureBrowserVideoFrame(video),
+        waveformPeaks: []
+      });
+    };
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadedmetadata = () => {
+      if (Number.isFinite(video.duration) && video.duration > 0) video.currentTime = Math.min(0.25, video.duration / 10);
+      else finish();
+    };
+    video.onseeked = finish;
+    video.onerror = () => reject(new Error("Could not read recording metadata."));
+    window.setTimeout(finish, 1800);
+    video.src = url;
+  });
+}
+
+function captureBrowserVideoFrame(video: HTMLVideoElement): string | undefined {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) return undefined;
+  const canvas = document.createElement("canvas");
+  const scale = Math.min(1, 360 / Math.max(width, height));
+  canvas.width = Math.max(2, Math.round(width * scale));
+  canvas.height = Math.max(2, Math.round(height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) return undefined;
+  context.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.78);
 }

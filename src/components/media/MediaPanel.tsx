@@ -343,18 +343,6 @@ export function MediaPanel() {
 
   return (
     <aside className="media-panel" onDrop={onDropImport} onDragOver={(event) => event.preventDefault()} onClick={() => setContextMenu(null)}>
-      <input
-        ref={webFileInputRef}
-        className="web-file-input"
-        type="file"
-        accept={extensions.map((extension) => `.${extension}`).join(",")}
-        multiple
-        onChange={(event) => {
-          const files = Array.from(event.currentTarget.files ?? []);
-          event.currentTarget.value = "";
-          void importWebFiles(files);
-        }}
-      />
       <div className="panel-tabs">
         {(["Project Media", "Stock", "Brand Kit"] as const).map((name) => (
           <button className={tab === name ? "active" : ""} key={name} onClick={() => setTab(name)}>
@@ -363,9 +351,24 @@ export function MediaPanel() {
         ))}
       </div>
       <div className="media-actions">
-        <button className="import-button" onClick={importMedia} disabled={importing}>
-          <Import size={16} /> {importing ? "Importing..." : "Import"} <ChevronDown size={15} />
-        </button>
+        <div className="import-button-shell">
+          <button className="import-button" onClick={importMedia} disabled={importing}>
+            <Import size={16} /> {importing ? "Importing..." : "Import"} <ChevronDown size={15} />
+          </button>
+          <input
+            ref={webFileInputRef}
+            className={`web-file-input ${!isTauri ? "active" : ""}`}
+            type="file"
+            accept={extensions.map((extension) => `.${extension}`).join(",")}
+            multiple
+            disabled={importing || isTauri}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = "";
+              void importWebFiles(files);
+            }}
+          />
+        </div>
         <div className="view-actions">
           <button className={mediaUi.view === "grid" ? "active" : ""} title="Grid view" onClick={() => setMediaView("grid")}><Grid2X2 size={17} /></button>
           <button className={mediaUi.view === "list" ? "active" : ""} title="List view" onClick={() => setMediaView("list")}><List size={17} /></button>

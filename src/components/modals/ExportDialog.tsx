@@ -6,6 +6,7 @@ import { useEditorStore } from "../../store/editorStore";
 import { buildAudioExportPlan, buildExportPlan } from "../../utils/timeline";
 import { formatTimecode } from "../../utils/time";
 import type { AspectRatioPreset, ExportSettings } from "../../types/editor";
+import { isTauriRuntime } from "../../utils/runtime";
 
 const aspectPresets: Array<{ value: AspectRatioPreset; label: string; shape: "wide" | "classic" | "cinema" | "portrait" | "square" }> = [
   { value: "16:9", label: "16:9", shape: "wide" },
@@ -22,6 +23,7 @@ const aspectPresets: Array<{ value: AspectRatioPreset; label: string; shape: "wi
 export function ExportDialog() {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"video" | "audio">("video");
+  const isTauri = isTauriRuntime();
   const project = useEditorStore((state) => state.project);
   const updateExportSettings = useEditorStore((state) => state.updateExportSettings);
   const applyExportAspectPreset = useEditorStore((state) => state.applyExportAspectPreset);
@@ -41,6 +43,28 @@ export function ExportDialog() {
 
   const choosePath = async () => {
     const fileName = (project.name.trim() || "Unknown").replace(/\s+/g, "-").toLowerCase();
+    if (!isTauri) {
+      const suggestedName = `${fileName}.${mode === "audio" ? "m4a" : "mp4"}`;
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName,
+            types: mode === "audio"
+              ? [{ description: "AAC Audio", accept: { "audio/mp4": [".m4a"] } }]
+              : [{ description: "MP4 Video", accept: { "video/mp4": [".mp4"] } }]
+          });
+          updateExportSettings({ outputPath: `Browser save target: ${handle.name}` });
+          addToast("success", "Browser save target selected.");
+        } catch (error) {
+          if (String(error).includes("AbortError")) return;
+          addToast("error", String(error));
+        }
+      } else {
+        updateExportSettings({ outputPath: `Browser Downloads/${suggestedName}` });
+        addToast("info", "Your browser will download exports to its Downloads folder.");
+      }
+      return;
+    }
     const path = await save({
       defaultPath: `${fileName}.${mode === "audio" ? "m4a" : "mp4"}`,
       filters: mode === "audio"
@@ -53,6 +77,10 @@ export function ExportDialog() {
   const startExport = async () => {
     if (!project.exportSettings.outputPath) {
       await choosePath();
+      return;
+    }
+    if (!isTauri) {
+      addToast("error", "Online export cannot write PC paths or run the desktop FFmpeg renderer. Save the project as .mmotion, or export MP4/audio from the Windows app.");
       return;
     }
     if (mode === "audio" && audioExportPlan.clips.length === 0) {
@@ -105,9 +133,14 @@ export function ExportDialog() {
           <button onClick={() => setOpen(false)}><X size={18} /></button>
         </header>
         <label className="export-path-card">
-          <span>File path</span>
+          <span>{isTauri ? "File path" : "Browser save target"}</span>
           <div className="path-row">
-            <input value={project.exportSettings.outputPath} onChange={(event) => updateExportSettings({ outputPath: event.target.value })} placeholder={mode === "audio" ? "Choose an .m4a output path" : "Choose an .mp4 output path"} />
+            <input
+              readOnly={!isTauri}
+              value={project.exportSettings.outputPath}
+              onChange={(event) => updateExportSettings({ outputPath: event.target.value })}
+              placeholder={mode === "audio" ? "Choose an .m4a output path" : "Choose an .mp4 output path"}
+            />
             <button onClick={choosePath}>Browse</button>
           </div>
         </label>
@@ -163,7 +196,9 @@ export function ExportDialog() {
           </div>
         </div>
         <div className="export-note">
-          {mode === "audio"
+          {!isTauri
+            ? "Browsers cannot write directly to Windows paths or run the desktop FFmpeg renderer from this static web app. Use Browse to choose a browser save target, and use the Windows app for final MP4/audio rendering."
+            : mode === "audio"
             ? "Audio-only export mixes all audible timeline audio and unmuted video audio into an AAC .m4a file."
             : "Sequential visible video clips export to H.264 MP4. Unsupported timeline items are listed below before export."}
         </div>
