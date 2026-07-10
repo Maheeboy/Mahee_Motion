@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Mahee Motion">
+  <defs>
+    <linearGradient id="bolt" x1="12" y1="8" x2="52" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#66f0ff"/>
+      <stop offset="0.48" stop-color="#139cff"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2.4" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.074 0 0 0 0 0.612 0 0 0 0 1 0 0 0 .72 0" result="blueGlow"/>
+      <feMerge>
+        <feMergeNode in="blueGlow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0a0e12"/>
+  <path
+    filter="url(#glow)"
+    d="M36.7 4 10.5 35.4h18.1L22.9 60 53.5 25.5H34.9L36.7 4Z"
+    fill="url(#bolt)"
+  />
+  <path
+    d="M36.7 4 10.5 35.4h18.1L22.9 60 53.5 25.5H34.9L36.7 4Z"
+    fill="none"
+    stroke="rgba(255,255,255,.72)"
+    stroke-width="2"
+    stroke-linejoin="round"
+  />
+</svg>
